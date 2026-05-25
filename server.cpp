@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cstring>
 #include <sstream>
+#include <fstream>
 #include <iomanip>
 #include <chrono>
 #include <ctime>
@@ -43,7 +44,7 @@ struct Message {
 std::vector<Client> clients;
 std::map<std::string, SOCKET> user_sockets;
 std::map<std::string, std::map<std::string, int>> unreadCounts;
-std::set<std::string> knownUsers; // кто когда-либо был/есть история
+std::set<std::string> knownUsers;
 
 // ---------- helpers ----------
 static inline void trimCRLF(std::string& s) {
@@ -51,6 +52,7 @@ static inline void trimCRLF(std::string& s) {
     if (end == std::string::npos) { s.clear(); return; }
     s.erase(end + 1);
 }
+
 static inline void trimSpaces(std::string& s) {
     size_t start = s.find_first_not_of(" \t");
     if (start == std::string::npos) { s.clear(); return; }
@@ -121,7 +123,6 @@ static std::wstring getUnreadPath(const std::string& username) {
 static std::wstring getPairHistoryPath(const std::string& a, const std::string& b) {
     std::string A = sanitizeForFilenameUtf8(a);
     std::string B = sanitizeForFilenameUtf8(b);
-    // сортируем чтобы файл был один на пару
     if (A > B) std::swap(A, B);
     return L"logs\\history_" + utf8ToWide(A) + L"__" + utf8ToWide(B) + L".txt";
 }
@@ -134,7 +135,6 @@ void writeServerLog(const std::string& msgUtf8) {
 }
 
 static void saveUnreadForUser(const std::string& username) {
-    // переписываем файл целиком
     std::wstring path = getUnreadPath(username);
     FILE* f = nullptr;
     _wfopen_s(&f, path.c_str(), L"w+, ccs=UTF-8");
@@ -143,7 +143,6 @@ static void saveUnreadForUser(const std::string& username) {
         if (!f) return;
     }
 
-    // формат: sender:count
     for (const auto& p : unreadCounts[username]) {
         if (p.second <= 0) continue;
         std::wstring line = utf8ToWide(p.first + ":" + std::to_string(p.second));
@@ -167,11 +166,9 @@ static void loadUnreadForUser(const std::string& username) {
     wchar_t buf[1024];
     while (fgetws(buf, 1024, f)) {
         std::wstring wline(buf);
-        // убираем \r\n
         while (!wline.empty() && (wline.back() == L'\n' || wline.back() == L'\r')) wline.pop_back();
         if (wline.empty()) continue;
 
-        // wide -> utf8 через WinAPI
         int len = WideCharToMultiByte(CP_UTF8, 0, wline.c_str(), (int)wline.size(), nullptr, 0, nullptr, nullptr);
         if (len <= 0) continue;
         std::string line(len, '\0');
@@ -189,16 +186,24 @@ static void loadUnreadForUser(const std::string& username) {
 }
 
 static void appendMessageToPairHistory(const Message& m) {
-    // строка: time|from|text
+    // Общий файл диалога
     std::wstring path = getPairHistoryPath(m.from, m.to);
-    std::wstring wline = utf8ToWide(m.time + "|" + m.from + "|" + m.text);
-    appendWideLineToFile(path, wline);
+    std::string line = m.time + "|" + m.from + "|" + m.to + "|" + m.text;
+    appendWideLineToFile(path, utf8ToWide(line));
+
+    // Личный файл отправителя
+    std::wstring senderPath = L"logs\\chat_" + utf8ToWide(sanitizeForFilenameUtf8(m.from)) + L".txt";
+    std::string senderLine = "[" + m.time + "] [-> " + m.to + "]: " + m.text;
+    appendWideLineToFile(senderPath, utf8ToWide(senderLine));
+
+    // Личный файл получателя
+    std::wstring receiverPath = L"logs\\chat_" + utf8ToWide(sanitizeForFilenameUtf8(m.to)) + L".txt";
+    std::string receiverLine = "[" + m.time + "] [" + m.from + " ->]: " + m.text;
+    appendWideLineToFile(receiverPath, utf8ToWide(receiverLine));
 }
 
 static std::string loadPairHistoryForProtocol(const std::string& viewer, const std::string& with) {
-    // вернуть в формате протокола: from|text|from|text|...
     std::wstring path = getPairHistoryPath(viewer, with);
-
     FILE* f = nullptr;
     _wfopen_s(&f, path.c_str(), L"r, ccs=UTF-8");
     if (!f) {
@@ -218,24 +223,68 @@ static std::string loadPairHistoryForProtocol(const std::string& viewer, const s
         std::string line(len, '\0');
         WideCharToMultiByte(CP_UTF8, 0, wline.c_str(), (int)wline.size(), &line[0], len, nullptr, nullptr);
 
-        // ожидаем time|from|text
         size_t p1 = line.find('|');
         if (p1 == std::string::npos) continue;
         size_t p2 = line.find('|', p1 + 1);
         if (p2 == std::string::npos) continue;
+        size_t p3 = line.find('|', p2 + 1);
+        if (p3 == std::string::npos) continue;
 
         std::string from = line.substr(p1 + 1, p2 - (p1 + 1));
-        std::string text = line.substr(p2 + 1);
+        std::string text = line.substr(p3 + 1);
 
-        // протокол HISTORY не содержит time, как у вас было
-        out += from;
-        out += "|";
-        out += text;
-        out += "|";
+        out += from + "|" + text + "|";
     }
-
     fclose(f);
     return out;
+}
+
+// Загрузка всех известных пользователей из файлов при старте
+void loadAllKnownUsersFromFiles() {
+    system("dir /b logs\\chat_*.txt > logs\\temp_users.txt 2>nul");
+    std::ifstream filelist("logs/temp_users.txt");
+    std::string filename;
+
+    while (std::getline(filelist, filename)) {
+        if (filename.empty()) continue;
+        // Файл вида "chat_Имя.txt"
+        std::string name = filename;
+        if (name.rfind("chat_", 0) == 0) {
+            name = name.substr(5); // убираем "chat_"
+            size_t dot = name.rfind('.');
+            if (dot != std::string::npos) name = name.substr(0, dot);
+            if (!name.empty()) knownUsers.insert(name);
+        }
+    }
+    filelist.close();
+    system("del logs\\temp_users.txt 2>nul");
+
+    // Также сканируем history файлы
+    system("dir /b logs\\history_*.txt > logs\\temp_history.txt 2>nul");
+    std::ifstream histfile("logs/temp_history.txt");
+    while (std::getline(histfile, filename)) {
+        if (filename.empty()) continue;
+        // Файл вида "history_Анна__Борис.txt"
+        if (filename.rfind("history_", 0) == 0) {
+            std::string names = filename.substr(8);
+            size_t sep = names.find("__");
+            if (sep != std::string::npos) {
+                std::string user1 = names.substr(0, sep);
+                std::string user2 = names.substr(sep + 2);
+                size_t dot = user1.rfind('.');
+                if (dot != std::string::npos) user1 = user1.substr(0, dot);
+                dot = user2.rfind('.');
+                if (dot != std::string::npos) user2 = user2.substr(0, dot);
+                if (!user1.empty()) knownUsers.insert(user1);
+                if (!user2.empty()) knownUsers.insert(user2);
+            }
+        }
+    }
+    histfile.close();
+    system("del logs\\temp_history.txt 2>nul");
+
+    std::cout << "[!] Загружено известных пользователей: " << knownUsers.size() << std::endl;
+    writeServerLog("ЗАГРУЗКА ИСТОРИИ | Известных пользователей: " + std::to_string(knownUsers.size()));
 }
 
 // ---------- protocol handlers ----------
@@ -249,12 +298,10 @@ void sendUnreadCountsToClient(SOCKET client_socket, const std::string& username)
 }
 
 void sendChatHistory(SOCKET client_socket, const std::string& username, const std::string& with) {
-    // при открытии чата: считаем непрочитанное от with прочитанным
     unreadCounts[username][with] = 0;
     saveUnreadForUser(username);
 
     std::string history = loadPairHistoryForProtocol(username, with);
-
     std::stringstream ss;
     ss << "HISTORY|" << with << "|" << history;
     sendToClient(client_socket, ss.str() + "\n");
@@ -266,6 +313,7 @@ static void setClientCurrentChatLocked(const std::string& username, const std::s
         if (c.username == username) { c.currentChat = target; return; }
     }
 }
+
 static std::string getClientCurrentChatLocked(const std::string& username) {
     for (const auto& c : clients) {
         if (c.username == username) return c.currentChat;
@@ -280,17 +328,13 @@ void notifyAllClientsServerShutdown() {
 
 void removeClient(const std::string& username, const std::string& ip) {
     std::lock_guard<std::mutex> lock(clients_mutex);
-
     auto it = std::find_if(clients.begin(), clients.end(),
         [&username](const Client& c) { return c.username == username; });
-
     if (it != clients.end()) clients.erase(it);
     user_sockets.erase(username);
-
     writeServerLog("ОТКЛЮЧЕНИЕ | Пользователь: " + username + " | IP: " + ip);
 }
 
-// Можно ли открыть чат с target (онлайн или известен)
 static bool canChatWithLocked(const std::string& target) {
     if (user_sockets.find(target) != user_sockets.end()) return true;
     if (knownUsers.find(target) != knownUsers.end()) return true;
@@ -306,13 +350,17 @@ void handleClient(Client clientCopy) {
         knownUsers.insert(username);
     }
 
-    // загрузим непрочитанные с диска (персистентно)
     loadUnreadForUser(username);
-
     writeServerLog("ПОДКЛЮЧЕНИЕ | Пользователь: " + username + " | IP: " + clientCopy.ip);
-
-    // отправим непрочитанные сразу при входе
     sendUnreadCountsToClient(clientCopy.socket, username);
+
+    // Отправляем список всех известных пользователей
+    std::stringstream allUsers;
+    allUsers << "ALL_USERS|";
+    for (const auto& u : knownUsers) {
+        if (u != username) allUsers << u << ",";
+    }
+    sendToClient(clientCopy.socket, allUsers.str() + "\n");
 
     while (true) {
         memset(buffer, 0, BUFFER_SIZE);
@@ -330,15 +378,14 @@ void handleClient(Client clientCopy) {
             removeClient(username, clientCopy.ip);
             break;
         }
-        else if (message == "/users") {
-            // закрываем чат на сервере тоже
+        else if (message == "/online_users") {
             {
                 std::lock_guard<std::mutex> lock(clients_mutex);
                 setClientCurrentChatLocked(username, "");
             }
 
             std::stringstream ss;
-            ss << "USERS|";
+            ss << "ONLINE_USERS|";
             {
                 std::lock_guard<std::mutex> lock(clients_mutex);
                 for (const auto& c : clients) {
@@ -347,6 +394,19 @@ void handleClient(Client clientCopy) {
             }
             sendToClient(clientCopy.socket, ss.str() + "\n");
             sendUnreadCountsToClient(clientCopy.socket, username);
+        }
+        else if (message == "/all_users") {
+            {
+                std::lock_guard<std::mutex> lock(clients_mutex);
+                setClientCurrentChatLocked(username, ""); 
+            }
+
+            std::stringstream ss;
+            ss << "ALL_USERS|";
+            for (const auto& u : knownUsers) {
+                if (u != username) ss << u << ",";
+            }
+            sendToClient(clientCopy.socket, ss.str() + "\n");
         }
         else if (message.rfind("/chat", 0) == 0) {
             std::string target = (message.size() > 6) ? message.substr(6) : "";
@@ -367,22 +427,19 @@ void handleClient(Client clientCopy) {
                 ok = canChatWithLocked(target);
                 if (ok) {
                     setClientCurrentChatLocked(username, target);
-                    knownUsers.insert(target); // раз начали чат — считаем известным
+                    knownUsers.insert(target);
                 }
             }
 
             if (!ok) {
-                sendToClient(clientCopy.socket, "ERROR|Пользователь " + target + " не найден (ещё не заходил)\n");
+                sendToClient(clientCopy.socket, "ERROR|Пользователь " + target + " не найден\n");
                 continue;
             }
 
-            // сообщаем, с кем чат
             sendToClient(clientCopy.socket, "CHAT|Теперь вы общаетесь с " + target + "\n");
-            // отправляем историю (и обнуляем unread от target)
             sendChatHistory(clientCopy.socket, username, target);
         }
         else {
-            // обычный текст
             std::string chatWith;
             {
                 std::lock_guard<std::mutex> lock(clients_mutex);
@@ -394,7 +451,6 @@ void handleClient(Client clientCopy) {
                 continue;
             }
 
-            // сообщение сохраняем ВСЕГДА (даже если оффлайн)
             Message msg{ username, chatWith, message, getCurrentTime() };
             appendMessageToPairHistory(msg);
 
@@ -403,7 +459,6 @@ void handleClient(Client clientCopy) {
                 knownUsers.insert(chatWith);
             }
 
-            // если получатель онлайн — отправим ему MSG
             SOCKET recipientSocket = INVALID_SOCKET;
             std::string recipientCurrentChat;
             {
@@ -416,7 +471,6 @@ void handleClient(Client clientCopy) {
             }
 
             if (recipientSocket != INVALID_SOCKET) {
-                // FIX непрочитанных: если он сейчас в чате с отправителем — не увеличиваем
                 bool recipientIsReadingNow = (recipientCurrentChat == username);
                 if (!recipientIsReadingNow) {
                     unreadCounts[chatWith][username]++;
@@ -431,7 +485,6 @@ void handleClient(Client clientCopy) {
                 sendUnreadCountsToClient(recipientSocket, chatWith);
             }
             else {
-                // ОФФЛАЙН: увеличиваем непрочитанные и сохраняем на диск
                 unreadCounts[chatWith][username]++;
                 saveUnreadForUser(chatWith);
             }
@@ -443,7 +496,6 @@ void handleClient(Client clientCopy) {
     closesocket(clientCopy.socket);
 }
 
-// ---------- winsock init / ctrl+c ----------
 bool initWinsock() {
     WSADATA wsaData;
     return WSAStartup(MAKEWORD(2, 2), &wsaData) == 0;
@@ -453,12 +505,9 @@ void signalHandler(int) {
     std::cout << "\n[!] Остановка сервера..." << std::endl;
     std::string stopTime = getCurrentTime();
     writeServerLog("========== СЕРВЕР ОСТАНАВЛИВАЕТСЯ ========== | Время: " + stopTime);
-
     notifyAllClientsServerShutdown();
     Sleep(500);
-
     writeServerLog("========== СЕРВЕР ОСТАНОВЛЕН ========== | Время: " + stopTime);
-
     if (server_socket_global != INVALID_SOCKET) closesocket(server_socket_global);
     WSACleanup();
     exit(0);
@@ -469,8 +518,10 @@ int main() {
     SetConsoleCP(CP_UTF8);
 
     signal(SIGINT, signalHandler);
-
     system("mkdir logs 2>nul");
+
+    // Загружаем всех известных пользователей из файлов
+    loadAllKnownUsersFromFiles();
 
     writeServerLog("========== СЕРВЕР ЗАПУЩЕН ==========");
 
@@ -569,3 +620,5 @@ int main() {
     WSACleanup();
     return 0;
 }
+
+

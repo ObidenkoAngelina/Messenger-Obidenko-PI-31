@@ -61,7 +61,23 @@ void parseServerMessage(const std::string& msg) {
             unreadMessages[from] = count;
         }
     }
-    else if (type == "USERS") {
+    else if (type == "ALL_USERS") {
+        std::cout << "\n=== ВСЕ ПОЛЬЗОВАТЕЛИ ===" << std::endl;
+        std::stringstream ss(data);
+        std::string user;
+        while (std::getline(ss, user, ',')) {
+            if (!user.empty() && user != myUsername) {
+                int c = 0;
+                auto it = unreadMessages.find(user);
+                if (it != unreadMessages.end()) c = it->second;
+                if (c > 0) std::cout << "  - " << user << " (+" << c << " новых)" << std::endl;
+                else std::cout << "  - " << user << std::endl;
+            }
+        }
+        std::cout << "=======================" << std::endl;
+        std::cout << "> " << std::flush;
+    }
+    else if (type == "ONLINE_USERS") {  // было "USERS"
         std::cout << "\n=== Пользователи онлайн ===" << std::endl;
         std::stringstream ss(data);
         std::string user;
@@ -70,9 +86,8 @@ void parseServerMessage(const std::string& msg) {
                 int c = 0;
                 auto it = unreadMessages.find(user);
                 if (it != unreadMessages.end()) c = it->second;
-
                 if (c > 0) std::cout << "  - " << user << " (+" << c << " новых)" << std::endl;
-                else       std::cout << "  - " << user << std::endl;
+                else std::cout << "  - " << user << std::endl;
             }
         }
         std::cout << "==========================" << std::endl;
@@ -86,10 +101,8 @@ void parseServerMessage(const std::string& msg) {
     else if (type == "MSG") {
         size_t sep = data.find('|');
         if (sep == std::string::npos) return;
-
         std::string from = data.substr(0, sep);
         std::string text = data.substr(sep + 1);
-
         if (currentChat == from) {
             std::cout << "\r[" << from << "]: " << text << std::endl;
         }
@@ -107,9 +120,7 @@ void parseServerMessage(const std::string& msg) {
         }
         std::string chatWith = data.substr(0, sep);
         std::string history = data.substr(sep + 1);
-
         std::cout << "\n=== История с " << chatWith << " ===" << std::endl;
-
         if (history.empty()) {
             std::cout << "Нет сообщений" << std::endl;
         }
@@ -118,7 +129,12 @@ void parseServerMessage(const std::string& msg) {
             std::string from, text;
             while (std::getline(ss, from, '|')) {
                 if (std::getline(ss, text, '|')) {
-                    std::cout << "[" << from << "]: " << text << std::endl;
+                    if (from == myUsername) {
+                        std::cout << "[Я]: " << text << std::endl;
+                    }
+                    else {
+                        std::cout << "[" << from << "]: " << text << std::endl;
+                    }
                 }
             }
         }
@@ -222,7 +238,8 @@ int main() {
     recv(sock, response, 255, 0);
 
     std::cout << "\n=== КОМАНДЫ ===" << std::endl;
-    std::cout << "/users - список пользователей (с количеством новых сообщений)" << std::endl;
+    std::cout << "/online_users - список онлайн пользователей" << std::endl;
+    std::cout << "/all_users - список ВСЕХ пользователей (кто когда-либо заходил)" << std::endl;
     std::cout << "/chat Имя - начать диалог (можно и с оффлайн)" << std::endl;
     std::cout << "/quit - выход" << std::endl;
     std::cout << "==============" << std::endl;
@@ -241,14 +258,18 @@ int main() {
             running = false;
             break;
         }
-        else if (input == "/users") {
+        else if (input == "/online_users") {
+            currentChat = "";
+            send(sock, input.c_str(), (int)input.length(), 0);
+        }
+        else if (input == "/all_users") {
             currentChat = "";
             send(sock, input.c_str(), (int)input.length(), 0);
         }
         else if (input.rfind("/chat", 0) == 0) {
             std::string who = (input.size() > 6) ? input.substr(6) : "";
             trimSpaces(who);
-            currentChat = who; // даже если оффлайн — хотим продолжать писать
+            currentChat = who;
             send(sock, ("/chat " + who).c_str(), (int)(6 + who.size()), 0);
         }
         else {
