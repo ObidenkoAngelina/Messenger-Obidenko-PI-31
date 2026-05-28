@@ -12,21 +12,27 @@
 #include <netdb.h>
 #include <locale.h>
 
-const int BUFFER_SIZE = 16384;
-const int PORT = 8888;
+const int BUFFER_SIZE = 16384;  // Размер буфера для приёма сообщений
+const int PORT = 8888;          // Порт для подключения к серверу
 
-std::atomic<bool> running(true);
-int sock = -1;
-std::string myUsername;
-std::string currentChat = "";
-std::map<std::string, int> unreadMessages;
+std::atomic<bool> running(true);    // Флаг работы программы (потокобезопасный)
+int sock = -1;                      // Сокет для связи с сервером
+std::string myUsername;             // Имя текущего пользователя
+std::string currentChat = "";       // С кем сейчас ведётся диалог
+std::map<std::string, int> unreadMessages;  // Счётчик непрочитанных сообщений
 
+/**
+ * Удаляет символы перевода строки (\n, \r) в конце строки
+ */
 static inline void trimCRLF(std::string& s) {
     size_t end = s.find_last_not_of("\n\r");
     if (end == std::string::npos) { s.clear(); return; }
     s.erase(end + 1);
 }
 
+/**
+ * Удаляет пробелы в начале и конце строки
+ */
 static inline void trimSpaces(std::string& s) {
     size_t start = s.find_first_not_of(" \t");
     if (start == std::string::npos) { s.clear(); return; }
@@ -34,6 +40,9 @@ static inline void trimSpaces(std::string& s) {
     s = s.substr(start, end - start + 1);
 }
 
+/**
+ * Разбирает и обрабатывает сообщения от сервера
+ */
 void parseServerMessage(const std::string& msg) {
     size_t pos = msg.find('|');
     if (pos == std::string::npos) {
@@ -44,8 +53,8 @@ void parseServerMessage(const std::string& msg) {
     std::string type = msg.substr(0, pos);
     std::string data = msg.substr(pos + 1);
 
+    // Обработка непрочитанных сообщений
     if (type == "UNREAD") {
-        // Обновляем счетчики непрочитанных сообщений, но ничего не выводим
         unreadMessages.clear();
         std::stringstream ss(data);
         std::string item;
@@ -61,8 +70,8 @@ void parseServerMessage(const std::string& msg) {
                 unreadMessages[from] = count;
             }
         }
-        // Не выводим ничего, просто обновили счетчики
     }
+    // Обработка списка всех пользователей
     else if (type == "ALL_USERS") {
         std::cout << "\n=== ВСЕ ПОЛЬЗОВАТЕЛИ ===" << std::endl;
         std::stringstream ss(data);
@@ -81,6 +90,7 @@ void parseServerMessage(const std::string& msg) {
         std::cout << "=======================" << std::endl;
         std::cout << "> " << std::flush;
     }
+    // Обработка списка онлайн пользователей
     else if (type == "ONLINE_USERS") {
         std::cout << "\n=== ПОЛЬЗОВАТЕЛИ ОНЛАЙН ===" << std::endl;
         std::stringstream ss(data);
@@ -99,19 +109,21 @@ void parseServerMessage(const std::string& msg) {
         std::cout << "=========================" << std::endl;
         std::cout << "> " << std::flush;
     }
+    // Обработка начала диалога
     else if (type == "CHAT") {
         std::cout << data << std::endl;
         if (!currentChat.empty()) unreadMessages[currentChat] = 0;
         std::cout << "> " << std::flush;
     }
+    // Обработка нового сообщения
     else if (type == "MSG") {
         size_t sep = data.find('|');
         if (sep == std::string::npos) return;
         std::string from = data.substr(0, sep);
         std::string text = data.substr(sep + 1);
+
         if (currentChat == from) {
             std::cout << "\r[" << from << "]: " << text << std::endl;
-            // Если читаем чат, сбрасываем счетчик
             unreadMessages[from] = 0;
         }
         else {
@@ -120,6 +132,7 @@ void parseServerMessage(const std::string& msg) {
         }
         std::cout << "> " << std::flush;
     }
+    // Обработка истории переписки
     else if (type == "HISTORY") {
         size_t sep = data.find('|');
         if (sep == std::string::npos) {
@@ -128,6 +141,7 @@ void parseServerMessage(const std::string& msg) {
         }
         std::string chatWith = data.substr(0, sep);
         std::string history = data.substr(sep + 1);
+
         std::cout << "\n=== ИСТОРИЯ С " << chatWith << " ===" << std::endl;
         if (history.empty()) {
             std::cout << "Нет сообщений" << std::endl;
@@ -150,20 +164,26 @@ void parseServerMessage(const std::string& msg) {
         unreadMessages[chatWith] = 0;
         std::cout << "> " << std::flush;
     }
+    // Обработка ошибок
     else if (type == "ERROR") {
         std::cout << "[ОШИБКА] " << data << std::endl;
         std::cout << "> " << std::flush;
     }
+    // Обработка выключения сервера
     else if (type == "SERVER_SHUTDOWN") {
         std::cout << "\n[!!!] СЕРВЕР ОСТАНОВЛЕН [!!!]" << std::endl;
         running = false;
     }
+    // Всё остальное выводим как есть
     else {
         std::cout << data << std::endl;
         std::cout << "> " << std::flush;
     }
 }
 
+/**
+ * Функция приёма сообщений от сервера (работает в отдельном потоке)
+ */
 void receiveMessages() {
     char buffer[BUFFER_SIZE];
     while (running) {
@@ -180,7 +200,11 @@ void receiveMessages() {
     }
 }
 
+/**
+ * Главная функция - точка входа
+ */
 int main() {
+    // Устанавливаем локаль UTF-8 для корректного отображения русских букв
     setlocale(LC_ALL, "ru_RU.UTF-8");
     std::cout.imbue(std::locale("ru_RU.UTF-8"));
 
@@ -199,14 +223,17 @@ int main() {
         return 1;
     }
 
+    // Создаём папку для логов
     system("mkdir -p logs 2>/dev/null");
 
+    // Создаём сокет
     sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock == -1) {
         std::cerr << "Ошибка создания сокета" << std::endl;
         return 1;
     }
 
+    // Настраиваем адрес сервера
     sockaddr_in server_addr{};
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(PORT);
@@ -219,18 +246,21 @@ int main() {
 
     std::cout << "Подключение..." << std::endl;
 
+    // Подключаемся к серверу
     if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
         std::cerr << "Ошибка: не удалось подключиться" << std::endl;
         close(sock);
         return 1;
     }
 
-    // Отправляем имя в UTF-8 (сервер ждёт UTF-8)
+    // Отправляем имя пользователя
     send(sock, myUsername.c_str(), myUsername.length(), 0);
 
+    // Ждём ответ сервера (игнорируем)
     char response[256]{};
     recv(sock, response, 255, 0);
 
+    // Выводим список команд
     std::cout << "\n=== КОМАНДЫ ===" << std::endl;
     std::cout << "/online_users - список онлайн пользователей" << std::endl;
     std::cout << "/all_users - список ВСЕХ пользователей" << std::endl;
@@ -238,8 +268,10 @@ int main() {
     std::cout << "/quit - выход" << std::endl;
     std::cout << "==============" << std::endl;
 
+    // Запускаем поток для приёма сообщений
     std::thread receiver(receiveMessages);
 
+    // Основной цикл отправки сообщений
     std::string input;
     while (running) {
         std::cout << "> " << std::flush;
@@ -280,4 +312,4 @@ int main() {
     close(sock);
     std::cout << "Отключено." << std::endl;
     return 0;
-}И
+}

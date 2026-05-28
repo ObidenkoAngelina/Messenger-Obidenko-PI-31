@@ -1,0 +1,70 @@
+1. файлы сохранены в неправильной кодировке. Visual Studio не могла правильно прочитать русские символы для ввода и вывода на консоль. 
+
+Пошаговая инструкция:
+Откройте файл server.cpp в Visual Studio
+Файл → Сохранить server.cpp как...
+Нажмите на стрелку рядом с кнопкой "Сохранить" и выберите "Сохранить с кодировкой..."
+В появившемся окне выберите:
+Юникод (UTF-8 с сигнатурой) - кодовая страница 65001
+Нажмите "ОК"
+Повторите то же самое для:
+client.cpp
+logger.h
+Перекомпилируйте проект
+
+
+
+
+C:\Program Files\Microsoft Visual Studio\2022\Community>cd "C:\Users\Huawei\OneDrive\Рабочий стол\мессенджер\Messenger"
+
+C:\Users\Huawei\OneDrive\Рабочий стол\мессенджер\Messenger>cl /EHsc /std:c++17 /utf-8 /D_WINSOCK_DEPRECATED_NO_WARNINGS /wd4267 server.cpp /Fe:server.exe /link ws2_32.lib
+Оптимизирующий компилятор Microsoft (R) C/C++ версии 19.37.32824 для x86
+(C) Корпорация Майкрософт (Microsoft Corporation).  Все права защищены.
+
+server.cpp
+server.cpp(1): warning C4005: _WINSOCK_DEPRECATED_NO_WARNINGS: изменение макроопределения
+server.cpp(1): note: "_WINSOCK_DEPRECATED_NO_WARNINGS" ранее объявлен в командной строке
+Microsoft (R) Incremental Linker Version 14.37.32824.0
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+/out:server.exe
+ws2_32.lib
+server.obj
+
+C:\Users\Huawei\OneDrive\Рабочий стол\мессенджер\Messenger>cl /EHsc /std:c++17 /utf-8 /D_WINSOCK_DEPRECATED_NO_WARNINGS /wd4267 client.cpp /Fe:client.exe /link ws2_32.lib
+Оптимизирующий компилятор Microsoft (R) C/C++ версии 19.37.32824 для x86
+(C) Корпорация Майкрософт (Microsoft Corporation).  Все права защищены.
+
+client.cpp
+Microsoft (R) Incremental Linker Version 14.37.32824.0
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+/out:client.exe
+ws2_32.lib
+client.obj
+
+C:\Users\Huawei\OneDrive\Рабочий стол\мессенджер\Messenger>dir *.exe
+ Том в устройстве C имеет метку Windows
+ Серийный номер тома: 6C15-A901
+
+ Содержимое папки C:\Users\Huawei\OneDrive\Рабочий стол\мессенджер\Messenger
+
+23.05.2026  17:13           271 360 client.exe
+23.05.2026  17:13           282 112 server.exe
+               2 файлов        553 472 байт
+               0 папок   3 328 151 552 байт свободно
+
+C:\Users\Huawei\OneDrive\Рабочий стол\мессенджер\Messenger>
+
+
+
+
+
+
+ошибка из-за впн 
+
+
+не могла сделать чтоб когда выходишь из диалога после /users новые уведомления считались и те сообщение которые уже прочитаны, чтоб считались новые, когда ты уже вышел из диалога и исправишь ошибку непонятных букв в названии файлов, когда пишешь имя пользователя на русском.
+
+
+
